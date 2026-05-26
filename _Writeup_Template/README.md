@@ -12,12 +12,14 @@
 思路：暂不考虑使用OCR技术，基于公开模型ResNet-18进行训练。
 
 预期得分：500
+
 实际得分：500
 
 ### 2. 关键改进
 
-使用 transform 进行数据增强和预处理。
-基于 ResNet-18 模型进行训练。
+数据处理：使用 transform 进行数据增强和预处理。
+
+模型训练：基于 ResNet-18 模型进行训练。
 
 ### 3. 验证与复现
 
@@ -43,6 +45,50 @@ python my_infer.py
 ### 6. 代码包
 
 位于 `./src/2026-00/` 目录下。
+
+`my_train.py` 是模型训练文件。
+`my_infer.py` 是模型推理并输出结果的文件。
+`requirements.txt` 是依赖包列表。
+
+
+## 2026-01
+
+### 1. 解题概述
+
+基于时间序列数据对食堂备餐量进行预测。
+
+思路：使用梯度提升模型 HistGradientBoostingRegressor 进行训练。
+
+### 2. 关键改进
+
+时间特征处理：将一年中的第 n 天转换为正弦和余弦形式的周期性特征。
+
+模型训练：引入 HistGradientBoostingRegressor 模型进行训练。
+
+### 3. 验证与复现
+
+```bash
+cd ./src/2026-01
+conda create -n 2026-01 python=3.10
+conda activate 2026-01
+pip install -r requirements.txt
+python my_train.py
+python my_infer.py
+```
+
+### 4. AI使用说明
+
+使用的 AI 工具：Deepseek
+
+使用 AI 解释了 HistGradientBoostingRegressor 模型的概念与基本用法示例。
+
+### 5. 证据截图
+
+位于 `./screenshots/2026-01/` 目录下。
+
+### 6. 代码包
+
+位于 `./src/2026-01/` 目录下。
 
 `my_train.py` 是模型训练文件。
 `my_infer.py` 是模型推理并输出结果的文件。
