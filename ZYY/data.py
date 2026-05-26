@@ -130,7 +130,6 @@ def prepare_dataset(csv_path="train.csv"):
 import torchvision.models as models
 import torch.nn as nn
 import torch.nn.functional as F
-
 class AudioResNet(nn.Module):
     def __init__(self, num_classes=9):
         super(AudioResNet, self).__init__()
@@ -160,42 +159,114 @@ class AudioResNet(nn.Module):
         # 直接把图喂给魔改版的 ResNet 消化
         return self.resnet(x)
 
-def train_model(model, train_loader, val_loader, epochs=10, lr=0.001):
-    # 检测是否有GPU可用
+# def train_model(model, train_loader, val_loader, epochs=10, lr=0.001):
+#     # 检测是否有GPU可用
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#     print(f"使用的设备: {device}")
+#     model.to(device)
+    
+#     # 核心：多标签分类一定要用这个损失函数
+#     criterion = nn.BCEWithLogitsLoss()
+#     optimizer = optim.Adam(model.parameters(), lr=lr)
+    
+#     for epoch in range(epochs):
+#         model.train()
+#         total_loss = 0.0
+        
+#         for batch_X, batch_y in train_loader:
+#             batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+            
+#             # 清空导数缓存
+#             optimizer.zero_grad()
+            
+#             # 前向传播
+#             outputs = model(batch_X)
+            
+#             # 算损失
+#             loss = criterion(outputs, batch_y)
+            
+#             # 反向传播更新
+#             loss.backward()
+#             optimizer.step()
+            
+#             total_loss += loss.item()
+            
+#         print(f"Epoch [{epoch+1}/{epochs}], Training Loss: {total_loss/len(train_loader):.4f}")
+        
+#         # TODO: 这里还可以补充一段测试 val_loader 准确率的代码，你要试试先跑到这里吗？
+
+#     return model
+
+from sklearn.metrics import f1_score # 记得在文件上面 import 这个，用来算分
+
+# 【修改】给函数增加了 pos_weight 参数的接收
+def train_model(model, train_loader, val_loader, epochs=10, lr=0.001, pos_weight=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"使用的设备: {device}")
     model.to(device)
     
-    # 核心：多标签分类一定要用这个损失函数
-    criterion = nn.BCEWithLogitsLoss()
+    # 核心：引入算好的正样本倾向权重
+    if pos_weight is not None:
+        pos_weight = pos_weight.to(device)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    else:
+        criterion = nn.BCEWithLogitsLoss()
+        
     optimizer = optim.Adam(model.parameters(), lr=lr)
+    
+    best_val_f1 = 0.0 # 记录最高分
     
     for epoch in range(epochs):
         model.train()
-        total_loss = 0.0
+        total_train_loss = 0.0
         
+        # --- 训练阶段 ---
         for batch_X, batch_y in train_loader:
             batch_X, batch_y = batch_X.to(device), batch_y.to(device)
-            
-            # 清空导数缓存
             optimizer.zero_grad()
-            
-            # 前向传播
             outputs = model(batch_X)
-            
-            # 算损失
             loss = criterion(outputs, batch_y)
-            
-            # 反向传播更新
             loss.backward()
             optimizer.step()
+            total_train_loss += loss.item()
             
-            total_loss += loss.item()
-            
-        print(f"Epoch [{epoch+1}/{epochs}], Training Loss: {total_loss/len(train_loader):.4f}")
+        avg_train_loss = total_train_loss / len(train_loader)
         
-        # TODO: 这里还可以补充一段测试 val_loader 准确率的代码，你要试试先跑到这里吗？
+        # --- 验证阶段 (Early Stopping 核心逻辑) ---
+        model.eval()
+        val_preds = []
+        val_trues = []
+        
+        with torch.no_grad():
+            for batch_X, batch_y in val_loader:
+                batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+                outputs = model(batch_X)
+                
+                # 转换出 0/1 结果用来计算本地 F1 分数
+                probs = torch.sigmoid(outputs).cpu().numpy()
+                preds = (probs > 0.5).astype(int) 
+                
+                val_preds.append(preds)
+                val_trues.append(batch_y.cpu().numpy())
+                
+        val_preds = np.vstack(val_preds)
+        val_trues = np.vstack(val_trues)
+        
+        # 使用 sklearn 的 f1_score 计算宏平均分，提前洞察比赛成绩
+        current_val_f1 = f1_score(val_trues, val_preds, average='macro', zero_division=0)
+        
+        print(f"Epoch [{epoch+1}/{epochs}] | Train Loss: {avg_train_loss:.4f} | Val Macro-F1: {current_val_f1:.4f}")
+        
+        # --- 如果更强了，就保存当前的最强形态 ---
+        if current_val_f1 > best_val_f1:
+            best_val_f1 = current_val_f1
+            torch.save(model.state_dict(), "best_model.pth")
+            print(f"  🌟 发现新高分！已保存为 best_model.pth")
 
+    print(f"\n训练结束！最好验证集 Macro-F1: {best_val_f1:.4f}")
+    
+    # 训练完后，把刚才表现最好的最强权重重新加载回模型身上，再 return 回去
+    model.load_state_dict(torch.load("best_model.pth"))
     return model
 
 if __name__ == "__main__":
@@ -216,6 +287,18 @@ if __name__ == "__main__":
     X_val_tensor = torch.tensor(X_val, dtype=torch.float32)
     y_val_tensor = torch.tensor(y_val, dtype=torch.float32)
 
+# === 【新增】计算类别分布规律，生成 pos_weight ===
+    # 统计 y_train 中每个类别的正样本数量
+    # y_train 形状为 (Num_train, 9)
+    pos_counts = y_train.sum(axis=0)
+    total_counts = len(y_train)
+    neg_counts = total_counts - pos_counts
+    
+    # 为了防止某个类别由于数量极少导致除以0报错，加上一个微小的 epsilon (1e-5)
+    pos_weight_np = neg_counts / (pos_counts + 1e-5)
+    pos_weight = torch.tensor(pos_weight_np, dtype=torch.float32)
+    print(f"为应对类别不平衡，已计算出 pos_weight: \n{pos_weight.numpy()}")
+
     # 封装进DataLoader
     batch_size = 16
     train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
@@ -226,7 +309,7 @@ if __name__ == "__main__":
     # === 将以下两行替换掉你原来的 for 循环测试代码 ===
     print("\n开始训练模型...")
     model = AudioResNet(num_classes=9)
-    trained_model = train_model(model, train_loader, val_loader, epochs=30, lr=1e-3)
+    trained_model = train_model(model, train_loader, val_loader, epochs=30, lr=1e-4, pos_weight=pos_weight)
     
     # 训练结束后保存模型权重
     torch.save(trained_model.state_dict(), "model_weights.pth")
